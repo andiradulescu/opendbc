@@ -28,7 +28,7 @@ class TestVolkswagenMqbSafetyBase(common.CarSafetyTest, common.DriverTorqueSteer
 
   MAX_RATE_UP = 4
   MAX_RATE_DOWN = 10
-  MAX_TORQUE_LOOKUP = [0], [300]
+  MAX_TORQUE_LOOKUP = [0], [500]  # was 300; raised to 500 per re-vw/steering RE — see HCA_PIPELINE.md
   MAX_RT_DELTA = 75
 
   DRIVER_TORQUE_ALLOWANCE = 80

@@ -56,8 +56,12 @@ class CarControllerParams:
   # Documented lateral limits: 3.00 Nm max, rate of change 5.00 Nm/sec.
   # MQB vs PQ maximums are shared, but rate-of-change limited differently
   # based on safety requirements driven by lateral accel testing.
+  #
+  # MQB EPS protocol max is +/-511 LSB = +/-5.11 Nm (HCA_01 9-bit signed
+  # field); static RE of 5Q0909143 SW 2051 found no firmware-side cap below
+  # that protocol max. See re-vw/steering/HCA_PIPELINE.md.
 
-  STEER_MAX = 300                          # Max heading control assist torque 3.00 Nm
+  STEER_MAX = 500                          # 5.00 Nm — close to EPS protocol max of 5.11 Nm; was 300 (3.00 Nm)
   STEER_DRIVER_MULTIPLIER = 3              # weight driver torque heavily
   STEER_DRIVER_FACTOR = 1                  # from dbc
 
