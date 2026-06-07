@@ -12,7 +12,7 @@ LongCtrlState = structs.CarControl.Actuators.LongControlState
 
 
 def acc_starting(long_control_state, enabled, gas_pressed, esp_hold, v_ego, v_ego_stopping):
-  # signal startup/hold-release while departing a standstill, including the driver pulling away on the gas
+  # hold release / startup when starting from standstill, including on driver gas override
   driver_gas_override = enabled and gas_pressed
   start_control_required = esp_hold or v_ego < v_ego_stopping
   return (long_control_state == LongCtrlState.pid or driver_gas_override) and start_control_required
