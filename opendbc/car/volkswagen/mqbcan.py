@@ -86,6 +86,7 @@ def acc_control_value(main_switch_on, acc_faulted, enabled, long_active):
 
 
 def acc_hud_status_value(main_switch_on, acc_faulted, enabled, long_active):
+  # TODO: happens to resemble the ACC control value for now, but extend this for init/gas override later
   return acc_control_value(main_switch_on, acc_faulted, enabled, long_active)
 
 

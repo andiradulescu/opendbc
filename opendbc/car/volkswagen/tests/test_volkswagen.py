@@ -106,21 +106,17 @@ class TestVolkswagenLongitudinal(unittest.TestCase):
     assert mqbcan.acc_control_value(False, False, False, False) == 0 # off
 
   def test_gas_override_departing_sets_startup(self):
-    # Real seg-159 departure: stopped at a light, driver presses the accelerator to depart while engaged.
-    # esp_hold is releasing, vEgo ~0, longitudinal is overridden (longActive False) so longControlState is off.
+    # Stopped at a light, the driver pulls away on the accelerator while engaged. Longitudinal is overridden,
+    # so longControlState is off and the old pid-only condition missed it (HMS jumped 3 -> 0, dragging the EPB).
     from opendbc.car.volkswagen.carcontroller import acc_starting, LongCtrlState
-    v_ego_stopping = 0.5
-    # openpilot is NOT commanding the start (overridden) -> the old pid-only condition would miss this
-    assert acc_starting(LongCtrlState.off, enabled=True, long_active=False,
-                        esp_hold=True, v_ego=0.0, v_ego_stopping=v_ego_stopping) is True
-    assert acc_starting(LongCtrlState.off, enabled=True, long_active=False,
-                        esp_hold=False, v_ego=0.0, v_ego_stopping=v_ego_stopping) is True
+    v_stop = 0.5
+    # driver departing on the gas while still held
+    assert acc_starting(LongCtrlState.off, enabled=True, gas_pressed=True, esp_hold=True, v_ego=0.0, v_ego_stopping=v_stop)
+    # driver departing on the gas, hold released but still below stopping speed
+    assert acc_starting(LongCtrlState.off, enabled=True, gas_pressed=True, esp_hold=False, v_ego=0.0, v_ego_stopping=v_stop)
     # openpilot-commanded departure still works
-    assert acc_starting(LongCtrlState.pid, enabled=True, long_active=True,
-                        esp_hold=True, v_ego=0.0, v_ego_stopping=v_ego_stopping) is True
-    # not departing: above stopping speed and not overriding -> no startup bit
-    assert acc_starting(LongCtrlState.pid, enabled=True, long_active=True,
-                        esp_hold=False, v_ego=5.0, v_ego_stopping=v_ego_stopping) is False
-    # not engaged at all -> no startup bit
-    assert acc_starting(LongCtrlState.off, enabled=False, long_active=False,
-                        esp_hold=True, v_ego=0.0, v_ego_stopping=v_ego_stopping) is False
+    assert acc_starting(LongCtrlState.pid, enabled=True, gas_pressed=False, esp_hold=True, v_ego=0.0, v_ego_stopping=v_stop)
+    # rolling above stopping speed without an override: no startup bit
+    assert not acc_starting(LongCtrlState.pid, enabled=True, gas_pressed=False, esp_hold=False, v_ego=5.0, v_ego_stopping=v_stop)
+    # gas pressed but not engaged: no startup bit
+    assert not acc_starting(LongCtrlState.off, enabled=False, gas_pressed=True, esp_hold=True, v_ego=0.0, v_ego_stopping=v_stop)
