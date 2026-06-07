@@ -75,3 +75,52 @@ class TestVolkswagenPlatformConfigs(unittest.TestCase):
 
               expected_matches = {platform} if should_match else set()
               assert expected_matches == matches, "Bad match"
+
+
+class TestVolkswagenLongitudinal(unittest.TestCase):
+  """Standstill hold-release behavior, including departing on the accelerator while engaged (gas override)."""
+
+  def _hms(self, stopping, starting, esp_hold):
+    from opendbc.can import CANPacker, CANParser
+    from opendbc.car.volkswagen import mqbcan
+    packer = CANPacker("vw_mqb")
+    parser = CANParser("vw_mqb", [("ACC_07", 0)], 0)
+    msgs = mqbcan.create_acc_accel_control(packer, 0, 1, True, 0.0, 3, stopping, starting, esp_hold)
+    parser.update((0, [(addr, dat, bus) for addr, dat, bus in msgs]))
+    return parser.vl["ACC_07"]["ACC_Anforderung_HMS"]
+
+  def test_hold_release_hms_mapping(self):
+    # standby while held, hold request while stopping, startup/release while starting, none otherwise
+    assert self._hms(stopping=True, starting=False, esp_hold=True) == 3
+    assert self._hms(stopping=True, starting=False, esp_hold=False) == 1
+    assert self._hms(stopping=False, starting=True, esp_hold=True) == 4
+    assert self._hms(stopping=False, starting=True, esp_hold=False) == 4
+    assert self._hms(stopping=False, starting=False, esp_hold=False) == 0
+
+  def test_acc_control_value_override_state(self):
+    from opendbc.car.volkswagen import mqbcan
+    assert mqbcan.acc_control_value(True, True, True, True) == 6     # faulted
+    assert mqbcan.acc_control_value(True, False, True, True) == 3    # openpilot longitudinal active
+    assert mqbcan.acc_control_value(True, False, True, False) == 4   # engaged but driver overriding (gas)
+    assert mqbcan.acc_control_value(True, False, False, False) == 2  # main switch on, not engaged
+    assert mqbcan.acc_control_value(False, False, False, False) == 0 # off
+
+  def test_gas_override_departing_sets_startup(self):
+    # Real seg-159 departure: stopped at a light, driver presses the accelerator to depart while engaged.
+    # esp_hold is releasing, vEgo ~0, longitudinal is overridden (longActive False) so longControlState is off.
+    from opendbc.car.volkswagen.carcontroller import acc_starting, LongCtrlState
+    v_ego_stopping = 0.5
+    # openpilot is NOT commanding the start (overridden) -> the old pid-only condition would miss this
+    assert acc_starting(LongCtrlState.off, enabled=True, long_active=False,
+                        esp_hold=True, v_ego=0.0, v_ego_stopping=v_ego_stopping) is True
+    assert acc_starting(LongCtrlState.off, enabled=True, long_active=False,
+                        esp_hold=False, v_ego=0.0, v_ego_stopping=v_ego_stopping) is True
+    # openpilot-commanded departure still works
+    assert acc_starting(LongCtrlState.pid, enabled=True, long_active=True,
+                        esp_hold=True, v_ego=0.0, v_ego_stopping=v_ego_stopping) is True
+    # not departing: above stopping speed and not overriding -> no startup bit
+    assert acc_starting(LongCtrlState.pid, enabled=True, long_active=True,
+                        esp_hold=False, v_ego=5.0, v_ego_stopping=v_ego_stopping) is False
+    # not engaged at all -> no startup bit
+    assert acc_starting(LongCtrlState.off, enabled=False, long_active=False,
+                        esp_hold=True, v_ego=0.0, v_ego_stopping=v_ego_stopping) is False
