@@ -106,15 +106,14 @@ class TestVolkswagenLongitudinal(unittest.TestCase):
     assert mqbcan.acc_control_value(False, False, False, False) == 0 # off
 
   def test_gas_override_sets_hold_release(self):
-    # Driver gas override from standstill: longitudinal is overridden so longControlState is off, which the
-    # old pid-only condition missed, leaving HMS at hold standby (3) then none (0) and dragging the EPB.
+    # hold release / startup is requested on driver gas override from standstill, with longControlState off
     from opendbc.car.volkswagen.carcontroller import acc_starting, LongCtrlState
     v_stop = 0.5
     # driver gas override, still in hold standby
     assert acc_starting(LongCtrlState.off, enabled=True, gas_pressed=True, esp_hold=True, v_ego=0.0, v_ego_stopping=v_stop)
     # driver gas override, hold released but below stopping speed
     assert acc_starting(LongCtrlState.off, enabled=True, gas_pressed=True, esp_hold=False, v_ego=0.0, v_ego_stopping=v_stop)
-    # openpilot-commanded start still works
+    # openpilot-commanded start from standstill
     assert acc_starting(LongCtrlState.pid, enabled=True, gas_pressed=False, esp_hold=True, v_ego=0.0, v_ego_stopping=v_stop)
     # above stopping speed without an override: no hold release / startup
     assert not acc_starting(LongCtrlState.pid, enabled=True, gas_pressed=False, esp_hold=False, v_ego=5.0, v_ego_stopping=v_stop)
