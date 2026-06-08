@@ -94,7 +94,6 @@ class TestVolkswagenLongitudinal(unittest.TestCase):
     assert self._hms(stopping=True, starting=False, esp_hold=True) == 3
     assert self._hms(stopping=True, starting=False, esp_hold=False) == 1
     assert self._hms(stopping=False, starting=True, esp_hold=True) == 4
-    assert self._hms(stopping=False, starting=True, esp_hold=False) == 4
     assert self._hms(stopping=False, starting=False, esp_hold=False) == 0
 
   def test_acc_control_value_override_state(self):
@@ -119,3 +118,7 @@ class TestVolkswagenLongitudinal(unittest.TestCase):
     assert not acc_starting(LongCtrlState.pid, enabled=True, gas_pressed=False, esp_hold=False, v_ego=5.0, v_ego_stopping=v_stop)
     # gas override but not engaged: no hold release / startup
     assert not acc_starting(LongCtrlState.off, enabled=False, gas_pressed=True, esp_hold=True, v_ego=0.0, v_ego_stopping=v_stop)
+    # engaged and held without gas: hold standby, not hold release / startup
+    assert not acc_starting(LongCtrlState.stopping, enabled=True, gas_pressed=False, esp_hold=True, v_ego=0.0, v_ego_stopping=v_stop)
+    # gas override above stopping speed: no hold release / startup
+    assert not acc_starting(LongCtrlState.off, enabled=True, gas_pressed=True, esp_hold=False, v_ego=5.0, v_ego_stopping=v_stop)
