@@ -11,6 +11,11 @@ VisualAlert = structs.CarControl.HUDControl.VisualAlert
 LongCtrlState = structs.CarControl.Actuators.LongControlState
 
 
+def acc_accel(accel, long_active):
+  # commanded acceleration only while actively regulating, the inactive value otherwise (e.g. driver gas override)
+  return accel if long_active else CarControllerParams.ACCEL_INACTIVE
+
+
 def acc_starting(long_control_state, enabled, gas_pressed, esp_hold, v_ego, v_ego_stopping):
   # hold release / startup when starting from standstill, including on driver gas override
   driver_gas_override = enabled and gas_pressed
@@ -91,7 +96,7 @@ class CarController(CarControllerBase):
     if self.CP.openpilotLongitudinalControl:
       if self.frame % self.CCP.ACC_CONTROL_STEP == 0:
         acc_control = self.CCS.acc_control_value(CS.out.cruiseState.available, CS.out.accFaulted, CC.enabled, CC.longActive)
-        accel = float(np.clip(actuators.accel, self.CCP.ACCEL_MIN, self.CCP.ACCEL_MAX) if CC.longActive else 0)
+        accel = acc_accel(float(np.clip(actuators.accel, self.CCP.ACCEL_MIN, self.CCP.ACCEL_MAX)), CC.longActive)
         starting = acc_starting(actuators.longControlState, CC.enabled, CS.out.gasPressed, CS.esp_hold_confirmation, CS.out.vEgo, self.CP.vEgoStopping)
         stopping = actuators.longControlState == LongCtrlState.stopping and not starting
         can_sends.extend(self.CCS.create_acc_accel_control(self.packer_pt, self.CAN.pt, CS.acc_type, CC.enabled, accel,
