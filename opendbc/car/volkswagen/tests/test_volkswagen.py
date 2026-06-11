@@ -122,3 +122,32 @@ class TestVolkswagenLongitudinal(unittest.TestCase):
     assert not acc_starting(LongCtrlState.stopping, enabled=True, gas_pressed=False, esp_hold=True, v_ego=0.0, v_ego_stopping=v_stop)
     # gas override above stopping speed: no hold release / startup
     assert not acc_starting(LongCtrlState.off, enabled=True, gas_pressed=True, esp_hold=False, v_ego=5.0, v_ego_stopping=v_stop)
+
+  def test_accel_inactive_when_not_regulating(self):
+    # commanded acceleration only while actively regulating, the inactive value otherwise (e.g. driver gas override)
+    from opendbc.car.volkswagen.carcontroller import acc_accel
+    assert acc_accel(1.2, long_active=True) == 1.2
+    assert acc_accel(1.2, long_active=False) == CCP.ACCEL_INACTIVE
+    assert acc_accel(0.0, long_active=False) == CCP.ACCEL_INACTIVE
+
+  def test_gas_override_acc_messages_pass_safety(self):
+    # under driver gas override the safety model only passes the inactive accel value
+    from opendbc.can import CANPacker
+    from opendbc.car.volkswagen import mqbcan
+    from opendbc.car.volkswagen.values import VolkswagenSafetyFlags
+    from opendbc.safety.tests.libsafety import libsafety_py
+    from opendbc.safety.tests.common import CANPackerSafety
+
+    safety = libsafety_py.libsafety
+    safety.set_safety_hooks(CarParams.SafetyModel.volkswagen, VolkswagenSafetyFlags.LONG_CONTROL)
+    safety.init_tests()
+    safety.set_controls_allowed(True)
+    safety_packer = CANPackerSafety("vw_mqb")
+    safety.safety_rx_hook(safety_packer.make_can_msg_safety("Motor_20", 0, {"MO_Fahrpedalrohwert_01": 50}))
+    assert safety.get_gas_pressed_prev()
+
+    packer = CANPacker("vw_mqb")
+    for accel, expected_tx in ((CCP.ACCEL_INACTIVE, True), (0.0, False)):
+      msgs = mqbcan.create_acc_accel_control(packer, 0, 1, True, accel, 4, False, True, True)
+      for addr, dat, bus in msgs:
+        assert safety.safety_tx_hook(libsafety_py.make_CANPacket(addr, bus, dat)) == expected_tx, f"{accel=} {addr=:#x}"
