@@ -33,6 +33,37 @@ class HCAMitigation:
     return apply_torque
 
 
+class AccelResumeRamp:
+  """
+  Ramps the ACC acceleration command out of a driver gas override (or any fresh activation) so it follows from the
+  vehicle's current acceleration instead of stepping straight to the planner target. Factory ACC keeps regulating
+  through an override and resumes continuously; openpilot drops the command entirely while overridden, so without this
+  the first active frame jumps from the driver's acceleration to the full planner target. The jerk limit only applies
+  while catching up to the target; once caught up the command passes through untouched, so normal braking and
+  acceleration are unaffected.
+  """
+
+  def __init__(self, CCP):
+    self._max_delta = CCP.ACCEL_RESUME_JERK * DT_CTRL * CCP.ACC_CONTROL_STEP
+    self._accel_last = 0.0
+    self._ramping = True
+
+  def update(self, accel, long_active, a_ego):
+    if not long_active:
+      # not regulating: stay glued to the vehicle so the next active frame resumes from reality
+      self._accel_last = a_ego
+      self._ramping = True
+      return accel
+
+    if self._ramping:
+      ramped = float(np.clip(accel, self._accel_last - self._max_delta, self._accel_last + self._max_delta))
+      self._ramping = ramped != accel  # keep limiting until the command catches up to the target
+      accel = ramped
+
+    self._accel_last = accel
+    return accel
+
+
 class CarController(CarControllerBase):
   def __init__(self, dbc_names, CP):
     super().__init__(dbc_names, CP)
@@ -51,6 +82,7 @@ class CarController(CarControllerBase):
     self.apply_torque_last = 0
     self.gra_acc_counter_last = None
     self.hca_mitigation = HCAMitigation(self.CCP)
+    self.accel_resume_ramp = AccelResumeRamp(self.CCP)
 
   def update(self, CC, CS, now_nanos):
     actuators = CC.actuators
@@ -85,6 +117,7 @@ class CarController(CarControllerBase):
       if self.frame % self.CCP.ACC_CONTROL_STEP == 0:
         acc_control = self.CCS.acc_control_value(CS.out.cruiseState.available, CS.out.accFaulted, CC.longActive)
         accel = float(np.clip(actuators.accel, self.CCP.ACCEL_MIN, self.CCP.ACCEL_MAX) if CC.longActive else 0)
+        accel = self.accel_resume_ramp.update(accel, CC.longActive, CS.out.aEgo)
         stopping = actuators.longControlState == LongCtrlState.stopping
         starting = actuators.longControlState == LongCtrlState.pid and (CS.esp_hold_confirmation or CS.out.vEgo < self.CP.vEgoStopping)
         can_sends.extend(self.CCS.create_acc_accel_control(self.packer_pt, self.CAN.pt, CS.acc_type, CC.longActive, accel,

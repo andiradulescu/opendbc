@@ -4,7 +4,7 @@ import unittest
 
 from opendbc.car import DT_CTRL
 from opendbc.car.structs import CarParams
-from opendbc.car.volkswagen.carcontroller import HCAMitigation
+from opendbc.car.volkswagen.carcontroller import AccelResumeRamp, HCAMitigation
 from opendbc.car.volkswagen.values import CAR, CarControllerParams as CCP, FW_QUERY_CONFIG, WMI
 from opendbc.car.volkswagen.fingerprints import FW_VERSIONS
 
@@ -28,6 +28,53 @@ class TestVolkswagenHCAMitigation(unittest.TestCase):
         should_nudge = actuator_value != 0 and frame == self.STUCK_TORQUE_FRAMES
         expected_torque = actuator_value - (1, -1)[actuator_value < 0] if should_nudge else actuator_value
         assert hca_mitigation.update(actuator_value, actuator_value) == expected_torque, f"{frame=}"
+
+class TestVolkswagenAccelResumeRamp(unittest.TestCase):
+  MAX_DELTA = CCP.ACCEL_RESUME_JERK * DT_CTRL * CCP.ACC_CONTROL_STEP
+
+  def test_passthrough_while_inactive(self):
+    """While not regulating, the command is untouched and the ramp tracks the vehicle for the next resume."""
+    ramp = AccelResumeRamp(CCP)
+    for a_ego in (-1.0, 0.0, 0.5):
+      assert ramp.update(0.0, False, a_ego) == 0.0
+
+  def test_resume_ramps_from_vehicle_not_step(self):
+    """On resume after an override, the command ramps from the vehicle's accel toward the target, jerk-limited."""
+    ramp = AccelResumeRamp(CCP)
+    a_ego, target = 0.17, -0.45  # the 00000063 seg4 handover
+    ramp.update(0.0, False, a_ego)  # driver gas override: seed from the vehicle
+
+    first = ramp.update(target, True, a_ego)
+    assert first != target, "resume stepped straight to the target"
+    assert abs(first - a_ego) <= self.MAX_DELTA + 1e-9, "first resume frame exceeded the jerk limit"
+
+    prev, reached = first, False
+    for _ in range(50):
+      out = ramp.update(target, True, a_ego)
+      assert abs(out - prev) <= self.MAX_DELTA + 1e-9, "ramp exceeded the jerk limit mid-catch-up"
+      prev = out
+      if abs(out - target) < 1e-9:
+        reached = True
+        break
+    assert reached, "ramp never caught up to the target"
+
+  def test_symmetric_accel_up(self):
+    """The ramp limits the accel direction too, not just decel."""
+    ramp = AccelResumeRamp(CCP)
+    a_ego, target = -0.5, 1.5
+    ramp.update(0.0, False, a_ego)
+    first = ramp.update(target, True, a_ego)
+    assert first != target
+    assert abs(first - a_ego) <= self.MAX_DELTA + 1e-9
+
+  def test_no_limit_after_catchup(self):
+    """Once caught up, normal braking/accel passes through unlimited (safety: no delayed braking)."""
+    ramp = AccelResumeRamp(CCP)
+    ramp.update(0.0, False, 0.0)
+    for _ in range(100):  # drive long enough to catch up to a steady target
+      ramp.update(0.0, True, 0.0)
+    # a genuine hard-braking step during sustained control must not be jerk-limited
+    assert ramp.update(-3.5, True, 0.0) == -3.5
 
 class TestVolkswagenPlatformConfigs(unittest.TestCase):
   def test_spare_part_fw_pattern(self):

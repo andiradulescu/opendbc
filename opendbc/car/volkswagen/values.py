@@ -66,6 +66,11 @@ class CarControllerParams:
 
   ACCEL_MAX = 2.0                          # 2.0 m/s max acceleration
   ACCEL_MIN = -3.5                         # 3.5 m/s max deceleration
+  ACCEL_RESUME_JERK = 8.0                  # m/s^3, ramp the accel command out of a driver gas override instead of
+                                           # stepping to the planner target. Matches openpilot's own normal decel jerk
+                                           # (p99 ~8 m/s^3) and factory ACC accel jerk (p99 ~7), so the resume is no
+                                           # sharper than normal motion. Only applies while catching up to the target;
+                                           # normal braking afterwards is unlimited. Tune on road.
 
   def __init__(self, CP):
     can_define = CANDefine(DBC[CP.carFingerprint][Bus.pt])
