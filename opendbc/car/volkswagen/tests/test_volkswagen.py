@@ -75,3 +75,22 @@ class TestVolkswagenPlatformConfigs(unittest.TestCase):
 
               expected_matches = {platform} if should_match else set()
               assert expected_matches == matches, "Bad match"
+
+
+class TestVolkswagenStandstillHold(unittest.TestCase):
+  """A clamped electronic parking brake is a confirmed standstill hold."""
+
+  def test_esp_hold_confirmed_includes_epb(self):
+    from opendbc.car.volkswagen.carstate import esp_hold_confirmed
+    # ESP confirms its own hydraulic standstill hold
+    assert esp_hold_confirmed(True, 0)
+    # EPB clamped (1 geschlossen_Parken, 2 teilgespannt_Halten) holds the vehicle even without ESP confirmation;
+    # without this, re-engaging at standstill against an already-clamped EPB leaves ACC_Anforderung_HMS stuck
+    # at "hold request" (1) and the TSK faults after ~1.4s
+    assert esp_hold_confirmed(False, 1)
+    assert esp_hold_confirmed(False, 2)
+    # EPB released and ESP not holding: not a confirmed standstill hold
+    assert not esp_hold_confirmed(False, 0)
+    # EPB in motion, opening or closing: not a settled hold
+    assert not esp_hold_confirmed(False, 3)
+    assert not esp_hold_confirmed(False, 4)

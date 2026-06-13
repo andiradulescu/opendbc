@@ -8,6 +8,14 @@ from opendbc.car.volkswagen.values import DBC, CanBus, NetworkLocation, Transmis
 ButtonType = structs.CarState.ButtonEvent.Type
 
 
+def esp_hold_confirmed(esp_haltebestaetigung: bool, epb_status: int) -> bool:
+  # The vehicle is held at standstill when the ESP confirms its hydraulic hold, or the electronic
+  # parking brake is clamped (EPB_Status: 1 geschlossen_Parken, 2 teilgespannt_Halten). Without the
+  # EPB case, re-engaging at standstill against an already-clamped EPB leaves ACC_Anforderung_HMS
+  # stuck at "hold request" and the TSK faults after ~1.4s.
+  return esp_haltebestaetigung or epb_status in (1, 2)
+
+
 class CarState(CarStateBase):
   def __init__(self, CP):
     super().__init__(CP)
@@ -100,7 +108,8 @@ class CarState(CarStateBase):
       ret.stockAeb = bool(ext_cp.vl["ACC_10"]["ANB_Teilbremsung_Freigabe"]) or bool(ext_cp.vl["ACC_10"]["ANB_Zielbremsung_Freigabe"])
 
       self.acc_type = ext_cp.vl["ACC_06"]["ACC_Typ"]
-      self.esp_hold_confirmation = bool(pt_cp.vl["ESP_21"]["ESP_Haltebestaetigung"])
+      self.esp_hold_confirmation = esp_hold_confirmed(bool(pt_cp.vl["ESP_21"]["ESP_Haltebestaetigung"]),
+                                                      int(pt_cp.vl["EPB_01"]["EPB_Status"]))
       acc_limiter_mode = ext_cp.vl["ACC_02"]["ACC_Gesetzte_Zeitluecke"] == 0
       speed_limiter_mode = bool(pt_cp.vl["TSK_06"]["TSK_Limiter_ausgewaehlt"])
 
