@@ -94,3 +94,15 @@ class TestVolkswagenStandstillHold(unittest.TestCase):
     # EPB in motion, opening or closing: not a settled hold
     assert not esp_hold_confirmed(False, 3)
     assert not esp_hold_confirmed(False, 4)
+
+  def test_acc_hold_blocked(self):
+    from opendbc.car.volkswagen.carcontroller import acc_hold_blocked
+    # foot-braking at standstill while the ESP has not taken its own hold (the EPB or the driver owns the
+    # standstill): claiming the hold faults the TSK (~1.4s), so suppress the claim
+    assert acc_hold_blocked(standstill=True, brake_pressed=True, esp_hold_hydraulic=False)
+    # ESP has taken its hydraulic hold: keep the claim even if the driver also brakes
+    assert not acc_hold_blocked(standstill=True, brake_pressed=True, esp_hold_hydraulic=True)
+    # not foot-braking (EPB holds the car alone): claim the hold normally
+    assert not acc_hold_blocked(standstill=True, brake_pressed=False, esp_hold_hydraulic=False)
+    # moving: not a standstill hold
+    assert not acc_hold_blocked(standstill=False, brake_pressed=True, esp_hold_hydraulic=False)

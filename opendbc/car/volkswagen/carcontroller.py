@@ -11,6 +11,14 @@ VisualAlert = structs.CarControl.HUDControl.VisualAlert
 LongCtrlState = structs.CarControl.Actuators.LongControlState
 
 
+def acc_hold_blocked(standstill: bool, brake_pressed: bool, esp_hold_hydraulic: bool) -> bool:
+  # The TSK faults (~1.4s) if ACC claims a standstill hold while the driver foot-brakes and the ESP has
+  # not taken the hold itself (the EPB or the driver's brake owns the standstill, e.g. resuming against a
+  # clamped parking brake). Don't claim the hold in that state; the car is already held, and the claim
+  # resumes the instant the driver releases the brake.
+  return standstill and brake_pressed and not esp_hold_hydraulic
+
+
 class HCAMitigation:
   """
   Manages HCA fault mitigations for VW/Audi EPS racks:
@@ -85,10 +93,11 @@ class CarController(CarControllerBase):
       if self.frame % self.CCP.ACC_CONTROL_STEP == 0:
         acc_control = self.CCS.acc_control_value(CS.out.cruiseState.available, CS.out.accFaulted, CC.longActive)
         accel = float(np.clip(actuators.accel, self.CCP.ACCEL_MIN, self.CCP.ACCEL_MAX) if CC.longActive else 0)
-        stopping = actuators.longControlState == LongCtrlState.stopping
+        hold_blocked = acc_hold_blocked(CS.out.standstill, CS.out.brakePressed, CS.esp_hold_hydraulic)
+        stopping = actuators.longControlState == LongCtrlState.stopping and not hold_blocked
         starting = actuators.longControlState == LongCtrlState.pid and (CS.esp_hold_confirmation or CS.out.vEgo < self.CP.vEgoStopping)
         can_sends.extend(self.CCS.create_acc_accel_control(self.packer_pt, self.CAN.pt, CS.acc_type, CC.longActive, accel,
-                                                           acc_control, stopping, starting, CS.esp_hold_confirmation))
+                                                           acc_control, stopping, starting, CS.esp_hold_confirmation and not hold_blocked))
 
       #if self.aeb_available:
       #  if self.frame % self.CCP.AEB_CONTROL_STEP == 0:
