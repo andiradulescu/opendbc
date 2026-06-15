@@ -16,6 +16,15 @@ def esp_hold_confirmed(esp_haltebestaetigung: bool, epb_status: int) -> bool:
   return esp_haltebestaetigung or epb_status in (1, 2)
 
 
+def parking_brake_engaged(handbrake: bool, standstill: bool, brake_pressed: bool, epb_status: int) -> bool:
+  # Block ACC engagement ("Parking Brake Engaged") when the manual handbrake is set, or when resuming
+  # would fault: at standstill, foot-braking, with the EPB clamped (EPB_Status: 1 geschlossen_Parken,
+  # 2 teilgespannt_Halten). In that state the ESP defers to the clamped EPB and never confirms the hold,
+  # so the TSK faults ~1.4s after ACC goes active (stock faults the same way). Releasing the brake clears
+  # it; the EPB hold is then accepted (HMS=3).
+  return handbrake or (standstill and brake_pressed and epb_status in (1, 2))
+
+
 class CarState(CarStateBase):
   def __init__(self, CP):
     super().__init__(CP)
@@ -91,7 +100,7 @@ class CarState(CarStateBase):
       brake_pedal_pressed = bool(pt_cp.vl["Motor_14"]["MO_Fahrer_bremst"])
       brake_pressure_detected = bool(pt_cp.vl["ESP_05"]["ESP_Fahrer_bremst"])
       ret.brakePressed = brake_pedal_pressed or brake_pressure_detected
-      ret.parkingBrake = bool(pt_cp.vl["Kombi_01"]["KBI_Handbremse"])  # FIXME: need to include an EPB check as well
+      ret.parkingBrake = bool(pt_cp.vl["Kombi_01"]["KBI_Handbremse"])
 
       ret.doorOpen = any([pt_cp.vl["Gateway_72"]["ZV_FT_offen"],
                           pt_cp.vl["Gateway_72"]["ZV_BT_offen"],
@@ -108,8 +117,8 @@ class CarState(CarStateBase):
       ret.stockAeb = bool(ext_cp.vl["ACC_10"]["ANB_Teilbremsung_Freigabe"]) or bool(ext_cp.vl["ACC_10"]["ANB_Zielbremsung_Freigabe"])
 
       self.acc_type = ext_cp.vl["ACC_06"]["ACC_Typ"]
-      self.esp_hold_confirmation = esp_hold_confirmed(bool(pt_cp.vl["ESP_21"]["ESP_Haltebestaetigung"]),
-                                                      int(pt_cp.vl["EPB_01"]["EPB_Status"]))
+      epb_status = int(pt_cp.vl["EPB_01"]["EPB_Status"])
+      self.esp_hold_confirmation = esp_hold_confirmed(bool(pt_cp.vl["ESP_21"]["ESP_Haltebestaetigung"]), epb_status)
       acc_limiter_mode = ext_cp.vl["ACC_02"]["ACC_Gesetzte_Zeitluecke"] == 0
       speed_limiter_mode = bool(pt_cp.vl["TSK_06"]["TSK_Limiter_ausgewaehlt"])
 
@@ -132,6 +141,7 @@ class CarState(CarStateBase):
     ret.seatbeltUnlatched = pt_cp.vl["Airbag_02"]["AB_Gurtschloss_FA"] != 3
 
     ret.standstill = ret.vEgoRaw == 0
+    ret.parkingBrake = parking_brake_engaged(ret.parkingBrake, ret.standstill, ret.brakePressed, epb_status)
     ret.cruiseState.standstill = self.CP.pcmCruise and self.esp_hold_confirmation
     ret.cruiseState.nonAdaptive = acc_limiter_mode or speed_limiter_mode
     if ret.cruiseState.speed > 90:

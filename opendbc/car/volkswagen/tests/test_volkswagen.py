@@ -94,3 +94,17 @@ class TestVolkswagenStandstillHold(unittest.TestCase):
     # EPB in motion, opening or closing: not a settled hold
     assert not esp_hold_confirmed(False, 3)
     assert not esp_hold_confirmed(False, 4)
+
+  def test_parking_brake_engaged(self):
+    from opendbc.car.volkswagen.carstate import parking_brake_engaged
+    # manual handbrake always blocks engagement
+    assert parking_brake_engaged(True, False, False, 0)
+    # standstill + foot brake + EPB clamped: block (ACC faults going active against the clamped EPB)
+    assert parking_brake_engaged(False, True, True, 1)
+    assert parking_brake_engaged(False, True, True, 2)
+    # EPB clamped but not foot-braking: don't block, the EPB hold is accepted (HMS=3)
+    assert not parking_brake_engaged(False, True, False, 1)
+    # foot-braking but EPB released: don't block, the ESP takes the hold even under brake
+    assert not parking_brake_engaged(False, True, True, 0)
+    # moving: don't block
+    assert not parking_brake_engaged(False, False, True, 1)
