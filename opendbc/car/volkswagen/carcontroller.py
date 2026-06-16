@@ -11,6 +11,18 @@ VisualAlert = structs.CarControl.HUDControl.VisualAlert
 LongCtrlState = structs.CarControl.Actuators.LongControlState
 
 
+def acc_accel(accel, long_active):
+  # commanded acceleration only while actively regulating, the inactive value otherwise (e.g. driver gas override)
+  return accel if long_active else CarControllerParams.ACCEL_INACTIVE
+
+
+def acc_starting(long_control_state, enabled, gas_pressed, esp_hold, v_ego, v_ego_stopping):
+  # hold release / startup when starting from standstill, including on driver gas override
+  driver_gas_override = enabled and gas_pressed
+  start_control_required = esp_hold or v_ego < v_ego_stopping
+  return (long_control_state == LongCtrlState.pid or driver_gas_override) and start_control_required
+
+
 class HCAMitigation:
   """
   Manages HCA fault mitigations for VW/Audi EPS racks:
@@ -83,11 +95,11 @@ class CarController(CarControllerBase):
 
     if self.CP.openpilotLongitudinalControl:
       if self.frame % self.CCP.ACC_CONTROL_STEP == 0:
-        acc_control = self.CCS.acc_control_value(CS.out.cruiseState.available, CS.out.accFaulted, CC.longActive)
-        accel = float(np.clip(actuators.accel, self.CCP.ACCEL_MIN, self.CCP.ACCEL_MAX) if CC.longActive else 0)
-        stopping = actuators.longControlState == LongCtrlState.stopping
-        starting = actuators.longControlState == LongCtrlState.pid and (CS.esp_hold_confirmation or CS.out.vEgo < self.CP.vEgoStopping)
-        can_sends.extend(self.CCS.create_acc_accel_control(self.packer_pt, self.CAN.pt, CS.acc_type, CC.longActive, accel,
+        acc_control = self.CCS.acc_control_value(CS.out.cruiseState.available, CS.out.accFaulted, CC.enabled, CC.longActive)
+        accel = acc_accel(float(np.clip(actuators.accel, self.CCP.ACCEL_MIN, self.CCP.ACCEL_MAX)), CC.longActive)
+        starting = acc_starting(actuators.longControlState, CC.enabled, CS.out.gasPressed, CS.esp_hold_confirmation, CS.out.vEgo, self.CP.vEgoStopping)
+        stopping = actuators.longControlState == LongCtrlState.stopping and not starting
+        can_sends.extend(self.CCS.create_acc_accel_control(self.packer_pt, self.CAN.pt, CS.acc_type, CC.enabled, accel,
                                                            acc_control, stopping, starting, CS.esp_hold_confirmation))
 
       #if self.aeb_available:
@@ -109,7 +121,7 @@ class CarController(CarControllerBase):
       lead_distance = 0
       if hud_control.leadVisible and self.frame * DT_CTRL > 1.0:  # Don't display lead until we know the scaling factor
         lead_distance = 512 if CS.upscale_lead_car_signal else 8
-      acc_hud_status = self.CCS.acc_hud_status_value(CS.out.cruiseState.available, CS.out.accFaulted, CC.longActive)
+      acc_hud_status = self.CCS.acc_hud_status_value(CS.out.cruiseState.available, CS.out.accFaulted, CC.enabled, CC.longActive)
       # FIXME: PQ may need to use the on-the-wire mph/kmh toggle to fix rounding errors
       # FIXME: Detect clusters with vEgoCluster offsets and apply an identical vCruiseCluster offset
       set_speed = hud_control.setSpeed * CV.MS_TO_KPH

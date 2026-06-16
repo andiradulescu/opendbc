@@ -66,6 +66,7 @@ class CarControllerParams:
 
   ACCEL_MAX = 2.0                          # 2.0 m/s max acceleration
   ACCEL_MIN = -3.5                         # 3.5 m/s max deceleration
+  ACCEL_INACTIVE = 3.01                    # one increment above the max range, sent when not regulating
 
   def __init__(self, CP):
     can_define = CANDefine(DBC[CP.carFingerprint][Bus.pt])
