@@ -11,18 +11,6 @@ VisualAlert = structs.CarControl.HUDControl.VisualAlert
 LongCtrlState = structs.CarControl.Actuators.LongControlState
 
 
-def acc_accel(accel, long_active):
-  # commanded acceleration only while actively regulating, the inactive value otherwise (e.g. driver gas override)
-  return accel if long_active else CarControllerParams.ACCEL_INACTIVE
-
-
-def acc_starting(long_control_state, enabled, gas_pressed, esp_hold, v_ego, v_ego_stopping):
-  # hold release / startup when starting from standstill, including on driver gas override
-  driver_gas_override = enabled and gas_pressed
-  start_control_required = esp_hold or v_ego < v_ego_stopping
-  return (long_control_state == LongCtrlState.pid or driver_gas_override) and start_control_required
-
-
 class HCAMitigation:
   """
   Manages HCA fault mitigations for VW/Audi EPS racks:
@@ -147,8 +135,9 @@ class CarController(CarControllerBase):
 
     if self.CP.openpilotLongitudinalControl:
       if self.frame % self.CCP.ACC_CONTROL_STEP == 0:
+        stopping = actuators.longControlState == LongCtrlState.stopping
+
         if self.CP.flags & VolkswagenFlags.MEB:
-          stopping = actuators.longControlState == LongCtrlState.stopping
           starting = actuators.longControlState == LongCtrlState.starting and CS.out.vEgo <= self.CP.vEgoStarting
           accel = float(np.clip(actuators.accel, self.CCP.ACCEL_MIN, self.CCP.ACCEL_MAX) if CC.enabled else 0)
 
@@ -169,11 +158,12 @@ class CarController(CarControllerBase):
           self.accel_last = accel
 
         else:
+          gas_override = CC.enabled and CS.out.gasPressed
           acc_control = self.CCS.acc_control_value(CS.out.cruiseState.available, CS.out.accFaulted, CC.enabled, CC.longActive)
-          accel = acc_accel(float(np.clip(actuators.accel, self.CCP.ACCEL_MIN, self.CCP.ACCEL_MAX)), CC.longActive)
-          starting = acc_starting(actuators.longControlState, CC.enabled, CS.out.gasPressed, CS.esp_hold_confirmation,
-                                  CS.out.vEgo, self.CP.vEgoStopping)
-          stopping = actuators.longControlState == LongCtrlState.stopping and not starting
+          accel = float(np.clip(actuators.accel, self.CCP.ACCEL_MIN, self.CCP.ACCEL_MAX)) if CC.longActive else self.CCP.ACCEL_INACTIVE
+          starting = (actuators.longControlState == LongCtrlState.pid or gas_override) and \
+                     (CS.esp_hold_confirmation or CS.out.vEgo < self.CP.vEgoStopping)
+          stopping = stopping and not starting
           can_sends.extend(self.CCS.create_acc_accel_control(self.packer_pt, self.CAN.pt, CS.acc_type, CC.enabled, accel,
                                                              acc_control, stopping, starting, CS.esp_hold_confirmation))
 
