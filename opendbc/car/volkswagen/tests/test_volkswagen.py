@@ -82,29 +82,18 @@ class TestVolkswagenStandstillHold(unittest.TestCase):
 
   def test_esp_hold_confirmed_includes_epb(self):
     from opendbc.car.volkswagen.carstate import esp_hold_confirmed
-    # ESP confirms its own hydraulic standstill hold
-    assert esp_hold_confirmed(True, 0)
-    # EPB clamped (1 geschlossen_Parken, 2 teilgespannt_Halten) holds the vehicle even without ESP confirmation;
-    # without this, re-engaging at standstill against an already-clamped EPB leaves ACC_Anforderung_HMS stuck
-    # at "hold request" (1) and the TSK faults after ~1.4s
-    assert esp_hold_confirmed(False, 1)
-    assert esp_hold_confirmed(False, 2)
-    # EPB released and ESP not holding: not a confirmed standstill hold
-    assert not esp_hold_confirmed(False, 0)
-    # EPB in motion, opening or closing: not a settled hold
-    assert not esp_hold_confirmed(False, 3)
-    assert not esp_hold_confirmed(False, 4)
+    assert esp_hold_confirmed(True, 0, False)
+    assert esp_hold_confirmed(False, 1, True)
+    assert not esp_hold_confirmed(False, 1, False)
+    assert not esp_hold_confirmed(False, 0, True)
+    assert not esp_hold_confirmed(False, 2, True)
+    assert not esp_hold_confirmed(False, 3, True)
 
   def test_parking_brake_engaged(self):
     from opendbc.car.volkswagen.carstate import parking_brake_engaged
-    # manual handbrake always blocks engagement
     assert parking_brake_engaged(True, False, False, 0)
-    # standstill + foot brake + EPB clamped: block (ACC faults going active against the clamped EPB)
     assert parking_brake_engaged(False, True, True, 1)
-    assert parking_brake_engaged(False, True, True, 2)
-    # EPB clamped but not foot-braking: don't block, the EPB hold is accepted (HMS=3)
+    assert not parking_brake_engaged(False, True, True, 2)
     assert not parking_brake_engaged(False, True, False, 1)
-    # foot-braking but EPB released: don't block, the ESP takes the hold even under brake
     assert not parking_brake_engaged(False, True, True, 0)
-    # moving: don't block
     assert not parking_brake_engaged(False, False, True, 1)

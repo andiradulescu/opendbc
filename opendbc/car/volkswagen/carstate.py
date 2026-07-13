@@ -8,21 +8,12 @@ from opendbc.car.volkswagen.values import DBC, CanBus, NetworkLocation, Transmis
 ButtonType = structs.CarState.ButtonEvent.Type
 
 
-def esp_hold_confirmed(esp_haltebestaetigung: bool, epb_status: int) -> bool:
-  # The vehicle is held at standstill when the ESP confirms its hydraulic hold, or the electronic
-  # parking brake is clamped (EPB_Status: 1 geschlossen_Parken, 2 teilgespannt_Halten). Without the
-  # EPB case, re-engaging at standstill against an already-clamped EPB leaves ACC_Anforderung_HMS
-  # stuck at "hold request" and the TSK faults after ~1.4s.
-  return esp_haltebestaetigung or epb_status in (1, 2)
+def esp_hold_confirmed(esp_haltebestaetigung: bool, epb_status: int, openpilot_longitudinal_control: bool) -> bool:
+  return esp_haltebestaetigung or (openpilot_longitudinal_control and epb_status == 1)
 
 
 def parking_brake_engaged(handbrake: bool, standstill: bool, brake_pressed: bool, epb_status: int) -> bool:
-  # Block ACC engagement ("Parking Brake Engaged") when the manual handbrake is set, or when resuming
-  # would fault: at standstill, foot-braking, with the EPB clamped (EPB_Status: 1 geschlossen_Parken,
-  # 2 teilgespannt_Halten). In that state the ESP defers to the clamped EPB and never confirms the hold,
-  # so the TSK faults ~1.4s after ACC goes active (stock faults the same way). Releasing the brake clears
-  # it; the EPB hold is then accepted (HMS=3).
-  return handbrake or (standstill and brake_pressed and epb_status in (1, 2))
+  return handbrake or (standstill and brake_pressed and epb_status == 1)
 
 
 class CarState(CarStateBase):
@@ -118,7 +109,8 @@ class CarState(CarStateBase):
 
       self.acc_type = ext_cp.vl["ACC_06"]["ACC_Typ"]
       epb_status = int(pt_cp.vl["EPB_01"]["EPB_Status"])
-      self.esp_hold_confirmation = esp_hold_confirmed(bool(pt_cp.vl["ESP_21"]["ESP_Haltebestaetigung"]), epb_status)
+      self.esp_hold_confirmation = esp_hold_confirmed(bool(pt_cp.vl["ESP_21"]["ESP_Haltebestaetigung"]), epb_status,
+                                                      self.CP.openpilotLongitudinalControl)
       acc_limiter_mode = ext_cp.vl["ACC_02"]["ACC_Gesetzte_Zeitluecke"] == 0
       speed_limiter_mode = bool(pt_cp.vl["TSK_06"]["TSK_Limiter_ausgewaehlt"])
 
