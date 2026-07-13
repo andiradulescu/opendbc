@@ -75,3 +75,25 @@ class TestVolkswagenPlatformConfigs(unittest.TestCase):
 
               expected_matches = {platform} if should_match else set()
               assert expected_matches == matches, "Bad match"
+
+
+class TestVolkswagenStandstillHold(unittest.TestCase):
+  """A clamped electronic parking brake is a confirmed standstill hold."""
+
+  def test_esp_hold_confirmed_includes_epb(self):
+    from opendbc.car.volkswagen.carstate import esp_hold_confirmed
+    assert esp_hold_confirmed(True, 0, False)
+    assert esp_hold_confirmed(False, 1, True)
+    assert not esp_hold_confirmed(False, 1, False)
+    assert not esp_hold_confirmed(False, 0, True)
+    assert not esp_hold_confirmed(False, 2, True)
+    assert not esp_hold_confirmed(False, 3, True)
+
+  def test_parking_brake_engaged(self):
+    from opendbc.car.volkswagen.carstate import parking_brake_engaged
+    assert parking_brake_engaged(True, False, False, 0)
+    assert parking_brake_engaged(False, True, True, 1)
+    assert not parking_brake_engaged(False, True, True, 2)
+    assert not parking_brake_engaged(False, True, False, 1)
+    assert not parking_brake_engaged(False, True, True, 0)
+    assert not parking_brake_engaged(False, False, True, 1)
