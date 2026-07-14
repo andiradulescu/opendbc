@@ -223,6 +223,7 @@ static bool volkswagen_meb_tx_hook(const CANPacket_t *msg) {
     .max_accel = 2000,
     .min_accel = -3500,
     .inactive_accel = 3010,  // VW sends one increment above the max range when inactive
+    .zero_accel = 0,
   };
 
   bool tx = true;
@@ -231,9 +232,7 @@ static bool volkswagen_meb_tx_hook(const CANPacket_t *msg) {
   if (msg->addr == MSG_ACC_18) {
     // Signal: ACC_18.ACC_Sollbeschleunigung_02 (acceleration in m/s2, scale 0.005, offset -7.22)
     int desired_accel = ((((msg->data[4] & 0x7U) << 8) | msg->data[3]) * 5U) - 7220U;
-    // allow ACCEL_OVERRIDE (0) while controls are allowed even when the driver is on the gas
-    bool accel_override = controls_allowed && (desired_accel == 0);
-    if (!accel_override && longitudinal_accel_checks(desired_accel, VOLKSWAGEN_MEB_LONG_LIMITS)) {
+    if (longitudinal_accel_checks(desired_accel, VOLKSWAGEN_MEB_LONG_LIMITS)) {
       tx = false;
     }
   }

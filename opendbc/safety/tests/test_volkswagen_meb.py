@@ -334,7 +334,8 @@ class TestVolkswagenMebLongSafety(TestVolkswagenMebSafetyBase):
     self.safety.set_controls_allowed(True)
     self.safety.set_gas_pressed_prev(True)
     self.assertTrue(self._tx(self._accel_msg(self.ACCEL_OVERRIDE)))
-    self.assertFalse(self._tx(self._accel_msg(MAX_ACCEL)))
+    self.assertTrue(self._tx(self._accel_msg(MAX_ACCEL)))
+    self.assertFalse(self._tx(self._accel_msg(MIN_ACCEL)))
 
 
 class TestVolkswagenMebGen2LongSafety(TestVolkswagenMebLongSafety):
