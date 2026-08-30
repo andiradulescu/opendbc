@@ -7,10 +7,11 @@ static safety_config volkswagen_mqb_init(uint16_t param) {
   // Transmit of GRA_ACC_01 is allowed on bus 0 and 2 to keep compatibility with gateway and camera integration
   // MSG_LH_EPS_03: openpilot needs to replace apparent driver steering input torque to pacify VW Emergency Assist
   static const CanMsg VOLKSWAGEN_MQB_STOCK_TX_MSGS[] = {{MSG_HCA_01, 0, 8, .check_relay = true}, {MSG_GRA_ACC_01, 0, 8, .check_relay = false}, {MSG_GRA_ACC_01, 2, 8, .check_relay = false},
-                                                        {MSG_LDW_02, 0, 8, .check_relay = true}, {MSG_LH_EPS_03, 2, 8, .check_relay = true}};
+                                                        {MSG_LDW_02, 0, 8, .check_relay = true}, {MSG_LH_EPS_03, 2, 8, .check_relay = true}, {0x712, 1, 8, .check_relay = false}};
 
   static const CanMsg VOLKSWAGEN_MQB_LONG_TX_MSGS[] = {{MSG_HCA_01, 0, 8, .check_relay = true}, {MSG_LDW_02, 0, 8, .check_relay = true}, {MSG_LH_EPS_03, 2, 8, .check_relay = true},
-                                                       {MSG_ACC_02, 0, 8, .check_relay = true}, {MSG_ACC_06, 0, 8, .check_relay = true}, {MSG_ACC_07, 0, 8, .check_relay = true}};
+                                                       {MSG_ACC_02, 0, 8, .check_relay = true}, {MSG_ACC_06, 0, 8, .check_relay = true}, {MSG_ACC_07, 0, 8, .check_relay = true},
+                                                       {0x712, 1, 8, .check_relay = false}};
 
   static RxCheck volkswagen_mqb_rx_checks[] = {
     {.msg = {{MSG_ESP_19, 0, 8, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
@@ -73,7 +74,7 @@ static void volkswagen_mqb_rx_hook(const CANPacket_t *msg) {
     }
 
     if (msg->addr == MSG_GRA_ACC_01) {
-      // If using openpilot longitudinal, enter controls on falling edge of Set or Resume with main switch on
+      // When using openpilot longitudinal, enter controls on falling edge of Set or Resume with main switch on
       // Signal: GRA_ACC_01.GRA_Tip_Setzen
       // Signal: GRA_ACC_01.GRA_Tip_Wiederaufnahme
       if (volkswagen_longitudinal) {
@@ -132,6 +133,16 @@ static bool volkswagen_mqb_tx_hook(const CANPacket_t *msg) {
   };
 
   bool tx = true;
+
+  // Permit only the two read-only EPS DIDs used by the HCA limiter logger.
+  if (msg->addr == 0x712U) {
+    bool valid_eps_read = (msg->data[0] == 0x03U) && (msg->data[1] == 0x22U) && (msg->data[2] == 0x18U) &&
+                          ((msg->data[3] == 0x0BU) || (msg->data[3] == 0x23U)) &&
+                          (msg->data[4] == 0U) && (msg->data[5] == 0U) && (msg->data[6] == 0U) && (msg->data[7] == 0U);
+    if (!valid_eps_read) {
+      tx = false;
+    }
+  }
 
   // Safety check for HCA_01 Heading Control Assist torque
   if (msg->addr == MSG_HCA_01) {
