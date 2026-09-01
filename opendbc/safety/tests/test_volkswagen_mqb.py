@@ -24,13 +24,15 @@ class TestVolkswagenMqbSafetyBase(common.CarSafetyTest, common.DriverTorqueSteer
 
   MAX_RATE_UP = 4
   MAX_RATE_DOWN = 10
-  MAX_TORQUE_LOOKUP = [0], [320]
+  # Keep the normal safety-test contract at the production 300 cNm limit. The experimental
+  # 301..320 region is exercised separately below with its extra speed/driver guards.
+  MAX_TORQUE_LOOKUP = [0], [300]
   MAX_RT_DELTA = 75
 
   DRIVER_TORQUE_ALLOWANCE = 80
   DRIVER_TORQUE_FACTOR = 3
 
-  # Wheel speeds _esp_19_msg
+  # Wheel speeds _esp_19_msg; DBC physical unit is km/h.
   def _speed_msg(self, speed):
     values = {"ESP_%s_Radgeschw_02" % s: speed for s in ["HL", "HR", "VL", "VR"]}
     return self.packer.make_can_msg_safety("ESP_19", 0, values)
@@ -124,28 +126,37 @@ class TestVolkswagenMqbSafetyBase(common.CarSafetyTest, common.DriverTorqueSteer
 
   def test_hca_probe_region_guards(self):
     for sign in (-1, 1):
-      # 301..320 is allowed at low speed with no driver input, subject to normal rate limits.
+      # The 301..320 region is reachable only inside the 1..10 m/s window with no driver input.
       self.safety.init_tests()
       self.safety.set_controls_allowed(True)
-      self._reset_speed_measurement(5)
+      self._reset_speed_measurement(5 * 3.6)  # _speed_msg uses km/h
       self._reset_torque_driver_measurement(0)
       self._set_prev_torque(300 * sign)
-      self.assertTrue(self._tx(self._torque_cmd_msg(304 * sign)))
+      for torque in (304, 308, 312, 316, 320):
+        self.assertTrue(self._tx(self._torque_cmd_msg(torque * sign)))
 
-      # The experimental region is blocked above 10 m/s, while the stock 300 limit remains allowed.
+      # Above 10 m/s the experimental region is blocked, while stock 300 remains allowed.
       self.safety.init_tests()
       self.safety.set_controls_allowed(True)
-      self._reset_speed_measurement(11)
+      self._reset_speed_measurement(11 * 3.6)
       self._reset_torque_driver_measurement(0)
       self._set_prev_torque(300 * sign)
       self.assertFalse(self._tx(self._torque_cmd_msg(304 * sign)))
       self._set_prev_torque(300 * sign)
       self.assertTrue(self._tx(self._torque_cmd_msg(300 * sign)))
 
-      # The experimental region is blocked when driver torque exceeds the normal intervention allowance.
+      # Below 1 m/s the experimental region is also blocked.
       self.safety.init_tests()
       self.safety.set_controls_allowed(True)
-      self._reset_speed_measurement(5)
+      self._reset_speed_measurement(0.5 * 3.6)
+      self._reset_torque_driver_measurement(0)
+      self._set_prev_torque(300 * sign)
+      self.assertFalse(self._tx(self._torque_cmd_msg(304 * sign)))
+
+      # Driver torque outside the normal intervention allowance blocks the experimental region.
+      self.safety.init_tests()
+      self.safety.set_controls_allowed(True)
+      self._reset_speed_measurement(5 * 3.6)
       self._reset_torque_driver_measurement(81)
       self._set_prev_torque(300 * sign)
       self.assertFalse(self._tx(self._torque_cmd_msg(304 * sign)))
