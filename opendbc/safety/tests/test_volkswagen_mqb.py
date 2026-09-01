@@ -24,7 +24,7 @@ class TestVolkswagenMqbSafetyBase(common.CarSafetyTest, common.DriverTorqueSteer
 
   MAX_RATE_UP = 4
   MAX_RATE_DOWN = 10
-  MAX_TORQUE_LOOKUP = [0], [300]
+  MAX_TORQUE_LOOKUP = [0], [320]
   MAX_RT_DELTA = 75
 
   DRIVER_TORQUE_ALLOWANCE = 80
@@ -121,6 +121,34 @@ class TestVolkswagenMqbSafetyBase(common.CarSafetyTest, common.DriverTorqueSteer
     self._rx(self._torque_driver_msg(0))
     self.assertEqual(0, self.safety.get_torque_driver_max())
     self.assertEqual(0, self.safety.get_torque_driver_min())
+
+  def test_hca_probe_region_guards(self):
+    for sign in (-1, 1):
+      # 301..320 is allowed at low speed with no driver input, subject to normal rate limits.
+      self.safety.init_tests()
+      self.safety.set_controls_allowed(True)
+      self._reset_speed_measurement(5)
+      self._reset_torque_driver_measurement(0)
+      self._set_prev_torque(300 * sign)
+      self.assertTrue(self._tx(self._torque_cmd_msg(304 * sign)))
+
+      # The experimental region is blocked above 10 m/s, while the stock 300 limit remains allowed.
+      self.safety.init_tests()
+      self.safety.set_controls_allowed(True)
+      self._reset_speed_measurement(11)
+      self._reset_torque_driver_measurement(0)
+      self._set_prev_torque(300 * sign)
+      self.assertFalse(self._tx(self._torque_cmd_msg(304 * sign)))
+      self._set_prev_torque(300 * sign)
+      self.assertTrue(self._tx(self._torque_cmd_msg(300 * sign)))
+
+      # The experimental region is blocked when driver torque exceeds the normal intervention allowance.
+      self.safety.init_tests()
+      self.safety.set_controls_allowed(True)
+      self._reset_speed_measurement(5)
+      self._reset_torque_driver_measurement(81)
+      self._set_prev_torque(300 * sign)
+      self.assertFalse(self._tx(self._torque_cmd_msg(304 * sign)))
 
 
 class TestVolkswagenMqbStockSafety(TestVolkswagenMqbSafetyBase):
