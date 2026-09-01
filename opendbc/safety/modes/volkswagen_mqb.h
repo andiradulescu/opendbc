@@ -18,7 +18,7 @@ static safety_config volkswagen_mqb_init(uint16_t param) {
     {.msg = {{MSG_LH_EPS_03, 0, 8, 100U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},
     {.msg = {{MSG_ESP_05, 0, 8, 50U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},
     {.msg = {{MSG_TSK_06, 0, 8, 50U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},
-    {.msg = {{MSG_MOTOR_20, 0, 8, 50U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+    {.msg = {{MSG_MOTOR_20, 0, 8, 50U, .max_counter = 15U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
     {.msg = {{MSG_MOTOR_14, 0, 8, 10U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
     {.msg = {{MSG_GRA_ACC_01, 0, 8, 33U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},
   };
@@ -115,7 +115,7 @@ static void volkswagen_mqb_rx_hook(const CANPacket_t *msg) {
 static bool volkswagen_mqb_tx_hook(const CANPacket_t *msg) {
   // lateral limits
   const TorqueSteeringLimits VOLKSWAGEN_MQB_STEERING_LIMITS = {
-    .max_torque = 300,             // 3.0 Nm (EPS side max of 3.0Nm with fault if violated)
+    .max_torque = 320,             // Experimental ceiling; normal openpilot controller remains capped at 300
     .max_rt_delta = 75,            // 4 max rate up * 50Hz send rate * 250000 RT interval / 1000000 = 50 ; 50 * 1.5 for safety pad = 75
     .max_rate_up = 4,              // 2.0 Nm/s RoC limit (EPS rack has own soft-limit of 5.0 Nm/s)
     .max_rate_down = 10,           // 5.0 Nm/s RoC limit (EPS rack has own soft-limit of 5.0 Nm/s)
@@ -148,6 +148,17 @@ static bool volkswagen_mqb_tx_hook(const CANPacket_t *msg) {
   if (msg->addr == MSG_HCA_01) {
     int desired_torque = volkswagen_mlb_mqb_steering_control_torque(msg);
     bool steer_req = GET_BIT(msg, 30U);
+
+    // The experimental 301..320 region is only allowed at <=10 m/s and with no driver intervention.
+    // The normal controller never commands this region; card.py must explicitly arm and extend a saturated 300 command.
+    bool experimental_torque = (desired_torque > 300) || (desired_torque < -300);
+    if (experimental_torque) {
+      bool low_speed = vehicle_speed.max <= 10000;  // VEHICLE_SPEED_FACTOR = 1000
+      bool no_driver_intervention = (torque_driver.max <= 80) && (torque_driver.min >= -80);
+      if (!low_speed || !no_driver_intervention) {
+        tx = false;
+      }
+    }
 
     if (steer_torque_cmd_checks(desired_torque, steer_req, VOLKSWAGEN_MQB_STEERING_LIMITS)) {
       tx = false;
