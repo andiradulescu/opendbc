@@ -10,6 +10,12 @@ from opendbc.car.volkswagen.values import CanBus, CarControllerParams, Volkswage
 VisualAlert = structs.CarControl.HUDControl.VisualAlert
 LongCtrlState = structs.CarControl.Actuators.LongControlState
 
+MQB_HCA_PROBE_STOCK_MAX = 300
+MQB_HCA_PROBE_MAX = 320
+MQB_HCA_PROBE_MIN_SPEED = 1.0
+MQB_HCA_PROBE_MAX_SPEED = 10.0
+MQB_HCA_PROBE_MAX_FRAMES = 10  # 200 ms at the 50 Hz HCA_01 send rate
+
 
 class HCAMitigation:
   """
@@ -60,10 +66,25 @@ class CarController(CarControllerBase):
     self.gra_acc_counter_last = None
     self.hca_mitigation = HCAMitigation(self.CCP)
 
+    # Explicitly armed by openpilot/card.py only for the MQB limiter experiment.
+    # This leaves the normal controller scale and 0..300 cNm behavior unchanged.
+    self.hca_probe_supported = not CP.flags & (VolkswagenFlags.PQ | VolkswagenFlags.MLB | VolkswagenFlags.MEB)
+    self.hca_probe_armed = False
+    self.hca_probe_armed_prev = False
+    self.hca_probe_active = False
+    self.hca_probe_done = False
+    self.hca_probe_frames = 0
+
   def update(self, CC, CS, now_nanos):
     actuators = CC.actuators
     hud_control = CC.hudControl
     can_sends = []
+
+    if self.hca_probe_armed != self.hca_probe_armed_prev:
+      self.hca_probe_active = False
+      self.hca_probe_done = False
+      self.hca_probe_frames = 0
+      self.hca_probe_armed_prev = self.hca_probe_armed
 
     # **** Steering Controls ************************************************ #
 
@@ -109,6 +130,29 @@ class CarController(CarControllerBase):
           apply_torque = apply_driver_steer_torque_limits(new_torque, self.apply_torque_last, CS.out.steeringTorque, self.CCP)
 
         apply_torque = self.hca_mitigation.update(apply_torque, self.apply_torque_last)
+
+        stock_torque = apply_torque
+        controller_saturated = abs(stock_torque) == MQB_HCA_PROBE_STOCK_MAX and abs(float(actuators.torque)) >= 0.999
+        probe_allowed = (self.hca_probe_supported and self.hca_probe_armed and not self.hca_probe_done and
+                         CC.enabled and CC.latActive and MQB_HCA_PROBE_MIN_SPEED <= CS.out.vEgo <= MQB_HCA_PROBE_MAX_SPEED and
+                         not CS.out.steeringPressed and not CS.out.steerFaultTemporary and not CS.out.steerFaultPermanent and
+                         controller_saturated and self.hca_probe_frames < MQB_HCA_PROBE_MAX_FRAMES)
+        same_direction = self.apply_torque_last == 0 or (self.apply_torque_last > 0) == (stock_torque > 0)
+
+        if probe_allowed and same_direction:
+          if stock_torque > 0:
+            apply_torque = min(MQB_HCA_PROBE_MAX, max(stock_torque, self.apply_torque_last + self.CCP.STEER_DELTA_UP))
+          else:
+            apply_torque = max(-MQB_HCA_PROBE_MAX, min(stock_torque, self.apply_torque_last - self.CCP.STEER_DELTA_UP))
+
+        was_probe_active = self.hca_probe_active
+        self.hca_probe_active = abs(apply_torque) > MQB_HCA_PROBE_STOCK_MAX
+        if self.hca_probe_active:
+          self.hca_probe_frames += 1
+        elif was_probe_active:
+          self.hca_probe_done = True
+          self.hca_probe_frames = 0
+
         hca_enabled = apply_torque != 0
         self.apply_torque_last = apply_torque
         can_sends.append(self.CCS.create_steering_control(self.packer_pt, self.CAN.pt, apply_torque, hca_enabled))
@@ -201,7 +245,9 @@ class CarController(CarControllerBase):
                                                            cancel=CC.cruiseControl.cancel, resume=CC.cruiseControl.resume))
 
     new_actuators = actuators.as_builder()
-    new_actuators.torque = self.apply_torque_last / self.CCP.STEER_MAX
+    # Keep the public normalized actuator output in its normal [-1, 1] range even during the probe;
+    # torqueOutputCan below retains the actual experimental CAN value.
+    new_actuators.torque = float(np.clip(self.apply_torque_last / self.CCP.STEER_MAX, -1.0, 1.0))
     new_actuators.torqueOutputCan = self.apply_torque_last
     new_actuators.curvature = self.apply_curvature_last
     new_actuators.accel = self.accel_last
