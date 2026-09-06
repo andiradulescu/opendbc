@@ -37,15 +37,15 @@ static safety_config volkswagen_mqb_init(uint16_t param) {
 
 static void volkswagen_mqb_rx_hook(const CANPacket_t *msg) {
   if (msg->bus == 0U) {
-    // Update in-motion state and numeric speed by sampling wheel speeds.
-    // ESP_19 wheel-speed scale is 0.0075 km/h/count; averaging four wheels and converting to m/s is raw_sum / 1920.
+    // Update in-motion state by sampling wheel speeds
     if (msg->addr == MSG_ESP_19) {
+      // sum 4 wheel speeds
       int speed = 0;
       for (uint8_t i = 0U; i < 8U; i += 2U) {
         int wheel_speed = msg->data[i] | (msg->data[i + 1U] << 8);
         speed += wheel_speed;
       }
-      UPDATE_VEHICLE_SPEED((float)speed / 1920.0F);
+      // Check all wheel speeds for any movement
       vehicle_moving = speed > 0;
     }
 
@@ -115,7 +115,7 @@ static void volkswagen_mqb_rx_hook(const CANPacket_t *msg) {
 static bool volkswagen_mqb_tx_hook(const CANPacket_t *msg) {
   // lateral limits
   const TorqueSteeringLimits VOLKSWAGEN_MQB_STEERING_LIMITS = {
-    .max_torque = 320,             // Experimental ceiling; normal openpilot controller remains capped at 300
+    .max_torque = 300,             // 3.0 Nm (EPS side max of 3.0Nm with fault if violated)
     .max_rt_delta = 75,            // 4 max rate up * 50Hz send rate * 250000 RT interval / 1000000 = 50 ; 50 * 1.5 for safety pad = 75
     .max_rate_up = 4,              // 2.0 Nm/s RoC limit (EPS rack has own soft-limit of 5.0 Nm/s)
     .max_rate_down = 10,           // 5.0 Nm/s RoC limit (EPS rack has own soft-limit of 5.0 Nm/s)
@@ -148,17 +148,6 @@ static bool volkswagen_mqb_tx_hook(const CANPacket_t *msg) {
   if (msg->addr == MSG_HCA_01) {
     int desired_torque = volkswagen_mlb_mqb_steering_control_torque(msg);
     bool steer_req = GET_BIT(msg, 30U);
-
-    // The experimental 301..320 region is only allowed at 1..10 m/s and with no driver intervention.
-    // The normal controller never commands this region; the experiment must be explicitly armed.
-    bool experimental_torque = (desired_torque > 300) || (desired_torque < -300);
-    if (experimental_torque) {
-      bool low_speed = (vehicle_speed.min >= 1000) && (vehicle_speed.max <= 10000);
-      bool no_driver_intervention = (torque_driver.max <= 80) && (torque_driver.min >= -80);
-      if (!low_speed || !no_driver_intervention) {
-        tx = false;
-      }
-    }
 
     if (steer_torque_cmd_checks(desired_torque, steer_req, VOLKSWAGEN_MQB_STEERING_LIMITS)) {
       tx = false;
