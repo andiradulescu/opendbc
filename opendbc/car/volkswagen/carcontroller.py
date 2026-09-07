@@ -33,6 +33,92 @@ class HCAMitigation:
     return apply_torque
 
 
+class HCAProbe:
+  STOCK_MAX = 300
+  MAX = 320
+  MIN_SPEED = 1.0
+  MAX_SPEED = 5.0
+  MAX_DRIVER_TORQUE = 50
+  MAX_FRAMES = 10
+  ARM_TIMEOUT_NS = 15_000_000_000
+  ACTIVE_TIMEOUT_NS = 250_000_000
+
+  def __init__(self, CCP, supported):
+    self.CCP = CCP
+    self.supported = supported
+    self.armed_prev = False
+    self.deadline_ns = 0
+    self.active_since_ns = 0
+    self.frames = 0
+    self.done = False
+    self.used = False
+    self.active = False
+    self.recovering = False
+
+  @staticmethod
+  def _step_toward(current, target, step):
+    if current < target:
+      return min(current + step, target)
+    if current > target:
+      return max(current - step, target)
+    return target
+
+  def update(self, nominal_torque, output_last, armed, now_nanos, enabled, lat_active, v_ego, driver_torque, fault_temp, fault_perm):
+    if armed and not self.armed_prev and not self.used:
+      self.deadline_ns = now_nanos + self.ARM_TIMEOUT_NS
+      self.active_since_ns = 0
+      self.frames = 0
+      self.done = False
+      self.active = False
+      self.recovering = False
+    self.armed_prev = armed
+
+    if not self.supported:
+      self.active = False
+      return nominal_torque
+
+    arm_valid = armed and not self.done and now_nanos <= self.deadline_ns
+    if armed and not arm_valid and not self.done:
+      self.done = True
+
+    eligibility = (arm_valid and enabled and lat_active and self.MIN_SPEED <= v_ego <= self.MAX_SPEED and
+                   abs(driver_torque) <= self.MAX_DRIVER_TORQUE and not fault_temp and not fault_perm and
+                   abs(nominal_torque) == self.STOCK_MAX)
+    same_direction = output_last == 0 or nominal_torque == 0 or (output_last > 0) == (nominal_torque > 0)
+
+    abort_probe = (not eligibility or not same_direction or self.frames >= self.MAX_FRAMES or
+                   (self.active_since_ns and now_nanos - self.active_since_ns >= self.ACTIVE_TIMEOUT_NS))
+    if abs(output_last) > self.STOCK_MAX and abort_probe:
+      self.recovering = True
+      self.used = True
+
+    # Once recovery starts, rate-limit all the way to the current nominal command, including below 300.
+    if self.recovering:
+      output = self._step_toward(output_last, nominal_torque, self.CCP.STEER_DELTA_DOWN)
+      self.active = abs(output) > self.STOCK_MAX
+      if output == nominal_torque:
+        self.recovering = False
+        self.done = True
+      return output
+
+    if eligibility and same_direction and not self.used:
+      direction = 1 if nominal_torque > 0 else -1
+      baseline = nominal_torque if abs(output_last) <= self.STOCK_MAX else output_last
+      output = baseline + direction * self.CCP.STEER_DELTA_UP
+      output = max(-self.MAX, min(self.MAX, output))
+      if abs(output) > self.STOCK_MAX:
+        if self.active_since_ns == 0:
+          self.active_since_ns = now_nanos
+        self.frames += 1
+        self.active = True
+        if self.frames >= self.MAX_FRAMES:
+          self.used = True
+        return output
+
+    self.active = False
+    return nominal_torque
+
+
 class CarController(CarControllerBase):
   def __init__(self, dbc_names, CP):
     super().__init__(dbc_names, CP)
@@ -59,6 +145,9 @@ class CarController(CarControllerBase):
     self.distance_bar_frame = 0
     self.gra_acc_counter_last = None
     self.hca_mitigation = HCAMitigation(self.CCP)
+    self.hca_probe_armed = False
+    self.hca_probe = HCAProbe(self.CCP, not CP.flags & (VolkswagenFlags.PQ | VolkswagenFlags.MLB | VolkswagenFlags.MEB))
+    self.hca_output_last = 0
 
   def update(self, CC, CS, now_nanos):
     actuators = CC.actuators
@@ -109,9 +198,13 @@ class CarController(CarControllerBase):
           apply_torque = apply_driver_steer_torque_limits(new_torque, self.apply_torque_last, CS.out.steeringTorque, self.CCP)
 
         apply_torque = self.hca_mitigation.update(apply_torque, self.apply_torque_last)
-        hca_enabled = apply_torque != 0
-        self.apply_torque_last = apply_torque
-        can_sends.append(self.CCS.create_steering_control(self.packer_pt, self.CAN.pt, apply_torque, hca_enabled))
+        self.apply_torque_last = apply_torque  # nominal stock-controller history stays independent of the probe output
+        output_torque = self.hca_probe.update(apply_torque, self.hca_output_last, self.hca_probe_armed, now_nanos,
+                                              CC.enabled, CC.latActive, CS.out.vEgo, CS.out.steeringTorque,
+                                              CS.out.steerFaultTemporary, CS.out.steerFaultPermanent)
+        self.hca_output_last = output_torque
+        hca_enabled = output_torque != 0
+        can_sends.append(self.CCS.create_steering_control(self.packer_pt, self.CAN.pt, output_torque, hca_enabled))
 
       if self.CP.flags & VolkswagenFlags.STOCK_HCA_PRESENT:
         # Pacify VW Emergency Assist driver inactivity detection by changing its view of driver steering input torque
@@ -202,7 +295,7 @@ class CarController(CarControllerBase):
 
     new_actuators = actuators.as_builder()
     new_actuators.torque = self.apply_torque_last / self.CCP.STEER_MAX
-    new_actuators.torqueOutputCan = self.apply_torque_last
+    new_actuators.torqueOutputCan = self.hca_output_last if not self.CP.flags & VolkswagenFlags.MEB else self.apply_torque_last
     new_actuators.curvature = self.apply_curvature_last
     new_actuators.accel = self.accel_last
 

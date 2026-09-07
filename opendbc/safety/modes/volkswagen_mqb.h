@@ -3,7 +3,14 @@
 #include "opendbc/safety/declarations.h"
 #include "opendbc/safety/modes/volkswagen_common.h"
 
+static bool volkswagen_mqb_hca_probe_enabled = false;
+static bool volkswagen_mqb_hca_probe_started = false;
+static bool volkswagen_mqb_hca_probe_used = false;
+static uint8_t volkswagen_mqb_hca_probe_frames = 0U;
+static uint32_t volkswagen_mqb_hca_probe_start_ts = 0U;
+
 static safety_config volkswagen_mqb_init(uint16_t param) {
+  const uint16_t FLAG_VOLKSWAGEN_HCA_PROBE = 4U;
   // Transmit of GRA_ACC_01 is allowed on bus 0 and 2 to keep compatibility with gateway and camera integration
   // MSG_LH_EPS_03: openpilot needs to replace apparent driver steering input torque to pacify VW Emergency Assist
   static const CanMsg VOLKSWAGEN_MQB_STOCK_TX_MSGS[] = {{MSG_HCA_01, 0, 8, .check_relay = true}, {MSG_GRA_ACC_01, 0, 8, .check_relay = false}, {MSG_GRA_ACC_01, 2, 8, .check_relay = false},
@@ -24,11 +31,14 @@ static safety_config volkswagen_mqb_init(uint16_t param) {
   };
 
   volkswagen_common_init();
+  volkswagen_mqb_hca_probe_enabled = GET_FLAG(param, FLAG_VOLKSWAGEN_HCA_PROBE);
+  volkswagen_mqb_hca_probe_started = false;
+  volkswagen_mqb_hca_probe_used = false;
+  volkswagen_mqb_hca_probe_frames = 0U;
+  volkswagen_mqb_hca_probe_start_ts = 0U;
 
 #ifdef ALLOW_DEBUG
   volkswagen_longitudinal = GET_FLAG(param, FLAG_VOLKSWAGEN_LONG_CONTROL);
-#else
-  SAFETY_UNUSED(param);
 #endif
 
   return volkswagen_longitudinal ? BUILD_SAFETY_CFG(volkswagen_mqb_rx_checks, VOLKSWAGEN_MQB_LONG_TX_MSGS) : \
@@ -45,8 +55,11 @@ static void volkswagen_mqb_rx_hook(const CANPacket_t *msg) {
         int wheel_speed = msg->data[i] | (msg->data[i + 1U] << 8);
         speed += wheel_speed;
       }
-      // Check all wheel speeds for any movement
+      // Check all wheel speeds for any movement and retain numeric speed for the opt-in probe guard.
       vehicle_moving = speed > 0;
+      if (volkswagen_mqb_hca_probe_enabled) {
+        UPDATE_VEHICLE_SPEED((speed / 4.0F) * 0.0075F * KPH_TO_MS);
+      }
     }
 
     // Update driver input torque samples
@@ -113,12 +126,30 @@ static void volkswagen_mqb_rx_hook(const CANPacket_t *msg) {
 }
 
 static bool volkswagen_mqb_tx_hook(const CANPacket_t *msg) {
+  const int VOLKSWAGEN_MQB_HCA_PROBE_STOCK_MAX = 300;
+  const int VOLKSWAGEN_MQB_HCA_PROBE_MAX = 320;
+  const int VOLKSWAGEN_MQB_HCA_PROBE_MAX_SPEED = 5000;
+  const int VOLKSWAGEN_MQB_HCA_PROBE_MIN_SPEED = 1000;
+  const int VOLKSWAGEN_MQB_HCA_PROBE_DRIVER_MAX = 50;
+  const uint8_t VOLKSWAGEN_MQB_HCA_PROBE_MAX_FRAMES = 10U;
+  const uint32_t VOLKSWAGEN_MQB_HCA_PROBE_MAX_US = 250000U;
+
   // lateral limits
   const TorqueSteeringLimits VOLKSWAGEN_MQB_STEERING_LIMITS = {
     .max_torque = 300,             // 3.0 Nm (EPS side max of 3.0Nm with fault if violated)
     .max_rt_delta = 75,            // 4 max rate up * 50Hz send rate * 250000 RT interval / 1000000 = 50 ; 50 * 1.5 for safety pad = 75
     .max_rate_up = 4,              // 2.0 Nm/s RoC limit (EPS rack has own soft-limit of 5.0 Nm/s)
     .max_rate_down = 10,           // 5.0 Nm/s RoC limit (EPS rack has own soft-limit of 5.0 Nm/s)
+    .driver_torque_allowance = 80,
+    .driver_torque_multiplier = 3,
+    .type = TorqueDriverLimited,
+  };
+
+  const TorqueSteeringLimits VOLKSWAGEN_MQB_HCA_PROBE_LIMITS = {
+    .max_torque = VOLKSWAGEN_MQB_HCA_PROBE_MAX,
+    .max_rt_delta = 75,
+    .max_rate_up = 4,
+    .max_rate_down = 10,
     .driver_torque_allowance = 80,
     .driver_torque_multiplier = 3,
     .type = TorqueDriverLimited,
@@ -144,13 +175,55 @@ static bool volkswagen_mqb_tx_hook(const CANPacket_t *msg) {
     }
   }
 
-  // Safety check for HCA_01 Heading Control Assist torque
+  // Safety check for HCA_01 Heading Control Assist torque. Normal commands use the stock 300 cNm envelope.
+  // The 301..320 diagnostic region requires an explicit safety-param capability and is one-shot per safety init.
   if (msg->addr == MSG_HCA_01) {
     int desired_torque = volkswagen_mlb_mqb_steering_control_torque(msg);
     bool steer_req = GET_BIT(msg, 30U);
+    bool experimental_torque = SAFETY_ABS(desired_torque) > VOLKSWAGEN_MQB_HCA_PROBE_STOCK_MAX;
 
-    if (steer_torque_cmd_checks(desired_torque, steer_req, VOLKSWAGEN_MQB_STEERING_LIMITS)) {
-      tx = false;
+    if (!volkswagen_mqb_hca_probe_enabled || !experimental_torque) {
+      // With the capability bit absent this is exactly the production 300 cNm check, including
+      // its state-reset behavior for malformed/out-of-range requests.
+      if (steer_torque_cmd_checks(desired_torque, steer_req, VOLKSWAGEN_MQB_STEERING_LIMITS)) {
+        tx = false;
+      }
+      if (volkswagen_mqb_hca_probe_enabled && volkswagen_mqb_hca_probe_started) {
+        volkswagen_mqb_hca_probe_used = true;
+      }
+    } else {
+      uint32_t now = microsecond_timer_get();
+      bool same_direction = (desired_torque_last == 0) || ((desired_torque > 0) == (desired_torque_last > 0));
+      bool reducing = same_direction && (SAFETY_ABS(desired_torque) < SAFETY_ABS(desired_torque_last));
+      bool speed_ok = (vehicle_speed.min >= VOLKSWAGEN_MQB_HCA_PROBE_MIN_SPEED) &&
+                      (vehicle_speed.max <= VOLKSWAGEN_MQB_HCA_PROBE_MAX_SPEED);
+      bool driver_ok = (torque_driver.max <= VOLKSWAGEN_MQB_HCA_PROBE_DRIVER_MAX) &&
+                       (torque_driver.min >= -VOLKSWAGEN_MQB_HCA_PROBE_DRIVER_MAX);
+      bool time_ok = !volkswagen_mqb_hca_probe_started ||
+                     (safety_get_ts_elapsed(now, volkswagen_mqb_hca_probe_start_ts) <= VOLKSWAGEN_MQB_HCA_PROBE_MAX_US);
+      bool can_start_or_continue = volkswagen_mqb_hca_probe_enabled && !volkswagen_mqb_hca_probe_used && speed_ok && driver_ok &&
+                                   time_ok && (volkswagen_mqb_hca_probe_frames < VOLKSWAGEN_MQB_HCA_PROBE_MAX_FRAMES);
+      bool can_recover = volkswagen_mqb_hca_probe_started && reducing;
+
+      // Rejected probe frames never reach steer_torque_cmd_checks(), so they cannot advance torque history.
+      if (!can_start_or_continue && !can_recover) {
+        tx = false;
+      } else {
+        if (!volkswagen_mqb_hca_probe_started) {
+          volkswagen_mqb_hca_probe_started = true;
+          volkswagen_mqb_hca_probe_start_ts = now;
+        }
+        if (steer_torque_cmd_checks(desired_torque, steer_req, VOLKSWAGEN_MQB_HCA_PROBE_LIMITS)) {
+          tx = false;
+        } else if (!reducing) {
+          volkswagen_mqb_hca_probe_frames++;
+          if (volkswagen_mqb_hca_probe_frames >= VOLKSWAGEN_MQB_HCA_PROBE_MAX_FRAMES) {
+            volkswagen_mqb_hca_probe_used = true;
+          }
+        } else {
+          // Recovery frames reduce commanded torque and intentionally do not consume the forward probe budget.
+        }
+      }
     }
   }
 
